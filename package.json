@@ -1,0 +1,75 @@
+{
+  "name": "@andygo.dev/nextjs-harness",
+  "version": "1.0.0",
+  "description": "Local AI development harness for Next.js projects: version-aware manual sync, SQLite/FTS5 search, a Next.js Claude Code Skill, and an MCP server.",
+  "keywords": [
+    "nextjs",
+    "mcp",
+    "claude",
+    "claude-code",
+    "documentation",
+    "ai",
+    "typescript",
+    "react"
+  ],
+  "homepage": "https://github.com/andygo-develop/nextjs-harness#readme",
+  "bugs": {
+    "url": "https://github.com/andygo-develop/nextjs-harness/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/andygo-develop/nextjs-harness.git"
+  },
+  "author": "Andy Kramar <andygo.develop@gmail.com>",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "nextjs-harness": "./bin/nextjs-harness.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "bin",
+    "dist",
+    "src/generators/templates",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "scripts": {
+    "build": "tsc",
+    "clean": "rm -rf dist",
+    "prepublishOnly": "npm run clean && npm run build",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint \"src/**/*.ts\" --max-warnings=0",
+    "lint:fix": "eslint \"src/**/*.ts\" --max-warnings=0 --fix",
+    "release": "[ \"$(git rev-parse --abbrev-ref HEAD)\" = \"main\" ] || { echo 'Error: not on main branch'; exit 1; } && [ -z \"$(git status --porcelain)\" ] || { echo 'Error: uncommitted changes'; exit 1; } && [ -z \"$(git log @{u}..HEAD --oneline)\" ] || { echo 'Error: unpushed commits'; exit 1; } && [ -z \"$(git log HEAD..@{u} --oneline)\" ] || { echo 'Error: local main is behind origin/main'; exit 1; } && npm publish --access public",
+    "bump:patch": "npm version patch --no-git-tag-version",
+    "bump:minor": "npm version minor --no-git-tag-version",
+    "bump:major": "npm version major --no-git-tag-version"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "commander": "^15.0.0",
+    "zod": "^4.4.3"
+  },
+  "optionalDependencies": {
+    "@huggingface/transformers": "^4.2.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "eslint": "^9.39.5",
+    "typescript": "^5.5.3",
+    "typescript-eslint": "^8.67.0",
+    "vitest": "^4.1.10"
+  }
+}
