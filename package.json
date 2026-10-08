@@ -1,6 +1,6 @@
 {
   "name": "@andygo.dev/nextjs-harness",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Local AI development harness for Next.js projects: version-aware manual sync, SQLite/FTS5 search, a Next.js Claude Code Skill, and an MCP server.",
   "keywords": [
     "nextjs",
@@ -24,7 +24,7 @@
   "license": "MIT",
   "type": "module",
   "bin": {
-    "nextjs-harness": "./bin/nextjs-harness.js"
+    "nextjs-harness": "bin/nextjs-harness.js"
   },
   "exports": {
     ".": {
