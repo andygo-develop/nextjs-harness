@@ -24,7 +24,7 @@
   "license": "MIT",
   "type": "module",
   "bin": {
-    "nextjs-harness": "./bin/nextjs-harness.js"
+    "nextjs-harness": "bin/nextjs-harness.js"
   },
   "exports": {
     ".": {
