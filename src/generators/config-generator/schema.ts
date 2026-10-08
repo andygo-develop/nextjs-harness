@@ -21,6 +21,24 @@ export const CURRENT_CONFIG_VERSION = 1;
  */
 export const DEFAULT_EMBEDDING_MODEL = 'Xenova/all-MiniLM-L6-v2';
 
+/**
+ * One `specs.include` entry: a bare glob, or a glob with tags.
+ *
+ * Tags label every spec file the glob matches, so `search_project_specs` can
+ * be narrowed to, say, only ADRs. A file matched by several entries carries
+ * the union of their tags. Plain strings stay valid, so configs written before
+ * tags existed need no migration.
+ */
+export const specIncludeSchema = z.union([
+  z.string().min(1),
+  z.object({
+    path: z.string().min(1),
+    tags: z.array(z.string().trim().min(1)).default([]),
+  }),
+]);
+
+export type SpecIncludeEntry = z.infer<typeof specIncludeSchema>;
+
 export const configSchema = z.object({
   configVersion: z.number().int().positive(),
   nextjs: z.object({
@@ -75,7 +93,7 @@ export const configSchema = z.object({
   specs: z
     .object({
       enabled: z.boolean().default(false),
-      include: z.array(z.string()).default(['docs/**/*.md', 'specs/**/*.md', '*.md']),
+      include: z.array(specIncludeSchema).default(['docs/**/*.md', 'specs/**/*.md', '*.md']),
       exclude: z
         .array(z.string())
         .default([

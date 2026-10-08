@@ -4,7 +4,8 @@
 import { access } from 'node:fs/promises';
 
 import { logger } from '../../../logger.js';
-import { discoverSpecFiles } from '../../../rags/specs/discovery.js';
+import type { SpecIncludeEntry } from '../../../generators/config-generator/schema.js';
+import { discoverSpecFiles, includePattern, includeTags } from '../../../rags/specs/discovery.js';
 import { SpecRepository } from '../../../rags/specs/repository.js';
 import { specIndexFile } from '../../../rags/specs/search.js';
 import { loadContext } from '../../context.js';
@@ -16,7 +17,7 @@ export interface SpecsStatusOptions {
 
 export interface SpecsStatus {
   enabled: boolean;
-  include: string[];
+  include: SpecIncludeEntry[];
   exclude: string[];
   indexed: boolean;
   documentCount: number;
@@ -68,6 +69,12 @@ export async function collectSpecsStatus(options: SpecsStatusOptions = {}): Prom
   };
 }
 
+/** `docs/**\/*.md [docs, adr]` for a tagged entry, the bare glob otherwise. */
+function describeInclude(entry: SpecIncludeEntry): string {
+  const tags = includeTags(entry);
+  return tags.length > 0 ? `${includePattern(entry)} [${tags.join(', ')}]` : includePattern(entry);
+}
+
 export async function specsStatusCommand(options: SpecsStatusOptions = {}): Promise<void> {
   const status = await collectSpecsStatus(options);
 
@@ -77,7 +84,7 @@ export async function specsStatusCommand(options: SpecsStatusOptions = {}): Prom
   }
 
   logger.print(`Project specs:    ${status.enabled ? 'enabled' : 'not enabled'}`);
-  logger.print(`Include:          ${status.include.join(', ')}`);
+  logger.print(`Include:          ${status.include.map(describeInclude).join(', ')}`);
   logger.print(`Matching files:   ${status.matchingFiles}`);
   logger.print(
     `Index:            ${status.indexed ? `${status.documentCount} documents from ${status.indexedFileCount} files` : 'empty'}`,

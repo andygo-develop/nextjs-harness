@@ -10,9 +10,13 @@ import { loadConfig, resetConfigCache, updateConfig } from '../generators/config
 import { createMcpContext } from '../mcp/context.js';
 import { runGetSpecTool, runSearchSpecsTool } from '../mcp/tools/search-specs.js';
 import { runSearchTool } from '../mcp/tools/search-manual.js';
+import { configSchema } from '../generators/config-generator/schema.js';
 import { discoverSpecFiles, globToRegExp } from '../rags/specs/discovery.js';
 import { parseSpec, sectionForSpecPath } from '../rags/specs/parser.js';
+import { SpecRepository } from '../rags/specs/repository.js';
 import { specIndexFile } from '../rags/specs/search.js';
+import { runSpecsSearch } from '../cli/commands/specs/search.js';
+import { DatabaseSync } from 'node:sqlite';
 import { cleanupTempDirs, makeIndexedProject, makeProject } from './helpers.js';
 
 afterEach(async () => {
@@ -390,5 +394,231 @@ describe('project spec MCP tools', () => {
 
     expect(result.isError).toBe(true);
     expect(result.content[0]!.text).toContain('search_project_specs');
+  });
+});
+
+const TAGGED_INCLUDE = [
+  { path: 'docs/**/*.md', tags: ['docs'] },
+  { path: 'docs/adr/**/*.md', tags: ['ADR'] },
+  { path: 'specs/**/*.md', tags: ['specs'] },
+  '*.md',
+];
+
+/** A spec project whose config tags its include paths. */
+async function makeTaggedSpecProject(include: unknown[] = TAGGED_INCLUDE): Promise<string> {
+  const root = await makeSpecProject();
+  await updateConfig(root, (current) => ({
+    ...current,
+    specs: { ...current.specs, include: include as typeof current.specs.include },
+  }));
+  resetConfigCache();
+  return root;
+}
+
+describe('spec include tags', () => {
+  describe('config', () => {
+    const base = {
+      configVersion: 1,
+      nextjs: { version: '16.1', docsLine: 'v16.3.8' },
+      manuals: {},
+      index: {},
+      mcp: {},
+    };
+
+    it('accepts a mix of bare globs and tagged entries', () => {
+      const config = configSchema.parse({
+        ...base,
+        specs: { include: [{ path: 'docs/**/*.md', tags: ['docs'] }, { path: 'specs/**/*.md' }, '*.md'] },
+      });
+
+      expect(config.specs.include).toEqual([
+        { path: 'docs/**/*.md', tags: ['docs'] },
+        { path: 'specs/**/*.md', tags: [] },
+        '*.md',
+      ]);
+    });
+
+    it('keeps the plain-string defaults, so older configs need no migration', () => {
+      expect(configSchema.parse(base).specs.include).toEqual(['docs/**/*.md', 'specs/**/*.md', '*.md']);
+    });
+
+    it('rejects an entry without a path, and empty tags', () => {
+      expect(configSchema.safeParse({ ...base, specs: { include: [{ tags: ['x'] }] } }).success).toBe(false);
+      expect(
+        configSchema.safeParse({ ...base, specs: { include: [{ path: 'docs/**', tags: ['  '] }] } }).success,
+      ).toBe(false);
+    });
+
+    it('survives a save and reload', async () => {
+      const root = await makeTaggedSpecProject();
+      const config = await loadConfig(root);
+
+      expect(config!.specs.include).toEqual(TAGGED_INCLUDE);
+    });
+  });
+
+  it('tags each file with the union of every matching entry, normalized', async () => {
+    const root = await makeSpecProject();
+    const { files, tags } = await discoverSpecFiles({ root, include: TAGGED_INCLUDE, exclude: ['vendor/**', 'node_modules/**'] });
+
+    expect(files).toContain('README.md');
+    expect(tags.get('docs/adr/0001-use-nextjs.md')).toEqual(['adr', 'docs']);
+    expect(tags.get('docs/billing.md')).toEqual(['docs']);
+    expect(tags.get('specs/checkout.md')).toEqual(['specs']);
+    expect(tags.get('README.md')).toEqual([]);
+  });
+
+  it('carries tags onto every parsed chunk', () => {
+    const chunks = parseSpec({
+      path: 'docs/billing.md',
+      source: SPEC_FILES['docs/billing.md']!,
+      tags: ['Billing', 'docs', 'docs'],
+    });
+
+    expect(chunks.length).toBeGreaterThan(1);
+    expect(chunks.every((chunk) => chunk.tags.join() === 'billing,docs')).toBe(true);
+  });
+
+  it('filters search results to specs carrying at least one requested tag', async () => {
+    const root = await makeTaggedSpecProject();
+    await runSpecsIndex({ cwd: root });
+    resetConfigCache();
+
+    const all = await runSpecsSearch('next', { cwd: root, limit: 25 });
+    expect(all.hits.map((hit) => hit.path)).toContain('docs/adr/0001-use-nextjs.md');
+
+    const adr = await runSpecsSearch('storefront', { cwd: root, limit: 25, tags: ['adr'] });
+    expect(adr.hits.map((hit) => hit.path)).toEqual(['docs/adr/0001-use-nextjs.md']);
+    expect(adr.hits[0]!.tags).toEqual(['adr', 'docs']);
+
+    // Any one tag is enough; matching is case-insensitive.
+    const either = await runSpecsSearch('guest OR invoice', { cwd: root, limit: 25, tags: ['SPECS', 'nope'] });
+    expect(new Set(either.hits.map((hit) => hit.path))).toEqual(new Set(['specs/checkout.md']));
+
+    const none = await runSpecsSearch('storefront', { cwd: root, tags: ['nope'] });
+    expect(none.hits).toEqual([]);
+  });
+
+  it('applies the limit after filtering, not before', async () => {
+    const root = await makeTaggedSpecProject();
+    await runSpecsIndex({ cwd: root });
+    resetConfigCache();
+
+    // "storefront" matches README (untagged) and the ADR; with limit 1 the
+    // filtered search must still find the ADR rather than an empty page.
+    const outcome = await runSpecsSearch('storefront', { cwd: root, limit: 1, tags: ['adr'] });
+    expect(outcome.hits.map((hit) => hit.path)).toEqual(['docs/adr/0001-use-nextjs.md']);
+  });
+
+  it('rewrites tags when only the config changed', async () => {
+    const root = await makeSpecProject();
+    await runSpecsIndex({ cwd: root });
+
+    await updateConfig(root, (current) => ({
+      ...current,
+      specs: { ...current.specs, include: TAGGED_INCLUDE as typeof current.specs.include },
+    }));
+    resetConfigCache();
+
+    const result = await runSpecsIndex({ cwd: root });
+    expect(result.updated).toBeGreaterThan(0);
+    expect(result.added).toBe(0);
+
+    resetConfigCache();
+    const outcome = await runSpecsSearch('guest checkout', { cwd: root, tags: ['specs'] });
+    expect(outcome.hits[0]!.path).toBe('specs/checkout.md');
+
+    // And a third run with nothing changed is a no-op again.
+    resetConfigCache();
+    const again = await runSpecsIndex({ cwd: root });
+    expect(again.updated + again.added + again.removed).toBe(0);
+  });
+
+  it('upgrades a version-1 index in place', async () => {
+    const root = await makeSpecProject();
+    const file = specIndexFile(root);
+    await mkdir(path.dirname(file), { recursive: true });
+
+    const legacy = new DatabaseSync(file);
+    legacy.exec(`
+      CREATE TABLE spec_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+      INSERT INTO spec_meta VALUES ('schema_version', '1');
+      CREATE TABLE specs (
+        id TEXT PRIMARY KEY, path TEXT NOT NULL, title TEXT NOT NULL, heading TEXT, anchor TEXT,
+        section TEXT NOT NULL, content TEXT NOT NULL, hash TEXT NOT NULL, updated_at TEXT NOT NULL
+      );
+      INSERT INTO specs VALUES ('spec:a.md#_intro', 'a.md', 'A', NULL, NULL, '(root)', 'alpha', 'h', 'now');
+      CREATE TABLE spec_vectors (
+        id TEXT NOT NULL, model TEXT NOT NULL, dims INTEGER NOT NULL, vector BLOB NOT NULL,
+        PRIMARY KEY (id, model)
+      );
+    `);
+    legacy.close();
+
+    const repository = SpecRepository.open(file);
+    try {
+      repository.upsertVector('spec:a.md#_intro', 'm', Float32Array.from([1, 0]));
+      expect(repository.count()).toBe(1);
+      expect(repository.get('spec:a.md#_intro')!.tags).toEqual([]);
+      expect(repository.vectorCount('m')).toBe(1);
+    } finally {
+      repository.close();
+    }
+  });
+
+  it('shows tagged include entries in specs status', async () => {
+    const root = await makeTaggedSpecProject();
+    const output = await capture(() => specsStatusCommand({ cwd: root }));
+
+    expect(output).toContain('docs/adr/**/*.md [ADR]');
+    expect(output).toContain('*.md');
+  });
+
+  describe('MCP tools', () => {
+    it('filters search_project_specs by tags and reports each result\'s tags', async () => {
+      const root = await makeTaggedSpecProject();
+      await runSpecsIndex({ cwd: root });
+      resetConfigCache();
+
+      const context = createMcpContext(root);
+      const result = await runSearchSpecsTool(context, { query: 'storefront', tags: ['adr'] });
+
+      expect(result.isError).toBeUndefined();
+      const structured = result.structuredContent as {
+        results: Array<{ path: string; tags: string[] }>;
+      };
+      expect(structured.results).toEqual([
+        expect.objectContaining({ path: 'docs/adr/0001-use-nextjs.md', tags: ['adr', 'docs'] }),
+      ]);
+      expect(result.content[0]!.text).toContain('tags: adr, docs');
+
+      const unfiltered = await runSearchSpecsTool(context, { query: 'storefront' });
+      const paths = (unfiltered.structuredContent as { results: Array<{ path: string }> }).results.map(
+        (entry) => entry.path,
+      );
+      expect(paths).toContain('README.md');
+    });
+
+    it('says which tags found nothing', async () => {
+      const root = await makeTaggedSpecProject();
+      await runSpecsIndex({ cwd: root });
+      resetConfigCache();
+
+      const result = await runSearchSpecsTool(createMcpContext(root), { query: 'storefront', tags: ['nope'] });
+
+      expect(result.content[0]!.text).toContain('with tags: nope');
+      expect(result.structuredContent).toMatchObject({ count: 0 });
+    });
+
+    it('returns tags from get_project_spec', async () => {
+      const root = await makeTaggedSpecProject();
+      await runSpecsIndex({ cwd: root });
+      resetConfigCache();
+
+      const context = createMcpContext(root);
+      const result = await runGetSpecTool(context, { documentId: 'spec:specs/checkout.md#guest-checkout' });
+
+      expect(result.structuredContent).toMatchObject({ tags: ['specs'] });
+    });
   });
 });

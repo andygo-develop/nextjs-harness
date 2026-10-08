@@ -10,7 +10,7 @@ import path from 'node:path';
 import { logger } from '../../logger.js';
 import { createEmbeddingWriter } from '../embeddings/indexing.js';
 import type { EmbeddingProvider } from '../embeddings/provider.js';
-import { discoverSpecFiles } from './discovery.js';
+import { discoverSpecFiles, type SpecInclude } from './discovery.js';
 import { parseSpec, type SpecChunk } from './parser.js';
 import type { SpecRepository } from './repository.js';
 
@@ -30,17 +30,23 @@ export interface SpecIndexResult {
 export interface IndexSpecsOptions {
   repository: SpecRepository;
   root: string;
-  include: readonly string[];
+  include: readonly SpecInclude[];
   exclude: readonly string[];
   limit?: number;
   /** See `IndexOptions.embeddings` in the manual indexer. */
   embeddings?: EmbeddingProvider;
 }
 
+/** Both lists are normalized (sorted, de-duplicated), so order-wise equality is enough. */
+function sameTags(stored: readonly string[] | undefined, current: readonly string[]): boolean {
+  const previous = stored ?? [];
+  return previous.length === current.length && previous.every((tag, index) => tag === current[index]);
+}
+
 export async function indexSpecs(options: IndexSpecsOptions): Promise<SpecIndexResult> {
   const startedAt = Date.now();
 
-  const { files, truncated } = await discoverSpecFiles({
+  const { files, tags, truncated } = await discoverSpecFiles({
     root: options.root,
     include: options.include,
     exclude: options.exclude,
@@ -48,6 +54,7 @@ export async function indexSpecs(options: IndexSpecsOptions): Promise<SpecIndexR
   });
 
   const existing = options.repository.hashes();
+  const existingTags = options.repository.tagsById();
   const seen = new Set<string>();
   const updatedAt = new Date().toISOString();
 
@@ -72,7 +79,7 @@ export async function indexSpecs(options: IndexSpecsOptions): Promise<SpecIndexR
       continue;
     }
 
-    const chunks = parseSpec({ path: file, source });
+    const chunks = parseSpec({ path: file, source, tags: tags.get(file) ?? [] });
     const toEmbed: SpecChunk[] = [];
 
     options.repository.transaction(() => {
@@ -83,13 +90,15 @@ export async function indexSpecs(options: IndexSpecsOptions): Promise<SpecIndexR
         if (previous === undefined) {
           options.repository.insert(chunk, updatedAt);
           added += 1;
-        } else if (previous !== chunk.hash) {
+        } else if (previous !== chunk.hash || !sameTags(existingTags.get(chunk.id), chunk.tags)) {
           options.repository.update(chunk, updatedAt);
           updated += 1;
         } else {
           unchanged += 1;
         }
 
+        // Keyed on the content hash, not on "was rewritten": a retag alone
+        // leaves the text — and so its vector — exactly as it was.
         if (writer && (previous !== chunk.hash || !alreadyEmbedded.has(chunk.id))) {
           toEmbed.push(chunk);
         }

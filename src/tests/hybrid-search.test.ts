@@ -203,6 +203,7 @@ const specChunk = {
   title: 'Billing',
   heading: 'Rules',
   section: 'docs',
+  tags: [],
   content: 'Invoice numbering rules.',
   hash: 'h1',
 };
@@ -854,6 +855,54 @@ describe('specs hybrid search', () => {
       expect(outcome.hits.length).toBeGreaterThan(0);
     } finally {
       searching.close();
+    }
+  });
+
+  it('retags without re-embedding, and filters both rankers by tag', async () => {
+    const { root } = await makeIndexedProject({ constraint: '^16.1.0' });
+    const { writeFile, mkdir } = await import('node:fs/promises');
+    const path = await import('node:path');
+    await mkdir(path.join(root, 'docs'), { recursive: true });
+    await mkdir(path.join(root, 'specs'), { recursive: true });
+    await writeFile(path.join(root, 'docs/billing.md'), '# Billing\n\n## Invoices\n\nInvoices use a prefix.\n', 'utf8');
+    await writeFile(path.join(root, 'specs/invoices.md'), '# Invoices\n\n## Rules\n\nInvoices are numbered.\n', 'utf8');
+
+    const embeddings = makeFakeEmbeddingProvider('spec-model');
+    const repository = SpecRepository.open(specIndexFile(root));
+    try {
+      const first = await indexSpecs({ repository, root, include: ['docs/**/*.md', 'specs/**/*.md'], exclude: [], embeddings });
+      expect(first.embedded).toBeGreaterThan(0);
+
+      const retagged = await indexSpecs({
+        repository,
+        root,
+        include: [
+          { path: 'docs/**/*.md', tags: ['docs'] },
+          { path: 'specs/**/*.md', tags: ['specs'] },
+        ],
+        exclude: [],
+        embeddings,
+      });
+      expect(retagged.updated).toBe(first.total);
+      expect(retagged.embedded).toBe(0);
+
+      const outcome = await searchSpecs({
+        repository,
+        query: 'invoices',
+        strategy: 'hybrid',
+        embeddings,
+        limit: 25,
+        tags: ['specs'],
+      });
+      expect(outcome.hits.length).toBeGreaterThan(0);
+      expect(outcome.hits.every((hit) => hit.path === 'specs/invoices.md')).toBe(true);
+
+      // A semantic-only candidate must be filtered too, not just bm25's pool.
+      expect(repository.listVectors('spec-model', ['docs']).every((entry) => entry.id.startsWith('spec:docs/'))).toBe(
+        true,
+      );
+    } finally {
+      repository.close();
     }
   });
 });

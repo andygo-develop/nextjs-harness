@@ -13,7 +13,12 @@ import { DatabaseSync, type StatementSync } from 'node:sqlite';
 import { deserializeVector, serializeVector } from '../embeddings/provider.js';
 import type { SpecChunk } from './parser.js';
 
-const SCHEMA_VERSION = 1;
+/**
+ * 2 added `specs.tags`. A version-1 database is upgraded in place (the column
+ * is added) rather than dropped, so an existing install keeps its embeddings;
+ * the next `specs index` fills the tags in.
+ */
+const SCHEMA_VERSION = 2;
 
 export interface StoredSpec {
   id: string;
@@ -22,6 +27,7 @@ export interface StoredSpec {
   heading?: string;
   anchor?: string;
   section: string;
+  tags: string[];
   content: string;
   hash: string;
   updatedAt: string;
@@ -44,6 +50,30 @@ function optionalText(value: unknown): string | undefined {
   return result === '' ? undefined : result;
 }
 
+/** Tags are stored as a JSON array so SQLite's `json_each` can filter on them. */
+function parseTags(value: unknown): string[] {
+  try {
+    const parsed: unknown = JSON.parse(text(value) || '[]');
+    return Array.isArray(parsed) ? parsed.filter((tag): tag is string => typeof tag === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * A `WHERE` fragment keeping only specs (aliased `s`) carrying at least one of
+ * `tags`, with its parameters. Empty when there is nothing to filter by.
+ */
+function tagFilter(tags: readonly string[] | undefined): { sql: string; params: string[] } {
+  if (!tags || tags.length === 0) {
+    return { sql: '', params: [] };
+  }
+  return {
+    sql: ` AND EXISTS (SELECT 1 FROM json_each(s.tags) t WHERE t.value IN (${tags.map(() => '?').join(', ')}))`,
+    params: [...tags],
+  };
+}
+
 function toSpec(row: Row): StoredSpec {
   return {
     id: text(row.id),
@@ -52,6 +82,7 @@ function toSpec(row: Row): StoredSpec {
     heading: optionalText(row.heading),
     anchor: optionalText(row.anchor),
     section: text(row.section),
+    tags: parseTags(row.tags),
     content: text(row.content),
     hash: text(row.hash),
     updatedAt: text(row.updated_at),
@@ -88,7 +119,8 @@ export class SpecRepository {
       | undefined;
     const version = current ? Number(text(current.value)) : 0;
 
-    if (version !== 0 && version !== SCHEMA_VERSION) {
+    // Version 1 differs only by the missing `tags` column, added below.
+    if (version !== 0 && version !== 1 && version !== SCHEMA_VERSION) {
       this.db.exec(`DROP TABLE IF EXISTS specs_fts;`);
       this.db.exec(`DROP TABLE IF EXISTS specs;`);
       this.db.exec(`DROP TABLE IF EXISTS spec_vectors;`);
@@ -102,6 +134,7 @@ export class SpecRepository {
         heading    TEXT,
         anchor     TEXT,
         section    TEXT NOT NULL,
+        tags       TEXT NOT NULL DEFAULT '[]',
         content    TEXT NOT NULL,
         hash       TEXT NOT NULL,
         updated_at TEXT NOT NULL
@@ -144,6 +177,12 @@ export class SpecRepository {
       );
     `);
 
+    // Additive upgrade from version 1: the FTS table and vectors are untouched.
+    const columns = this.db.prepare(`PRAGMA table_info(specs)`).all() as Row[];
+    if (!columns.some((column) => text(column.name) === 'tags')) {
+      this.db.exec(`ALTER TABLE specs ADD COLUMN tags TEXT NOT NULL DEFAULT '[]';`);
+    }
+
     this.db
       .prepare(`INSERT OR REPLACE INTO spec_meta (key, value) VALUES ('schema_version', ?)`)
       .run(String(SCHEMA_VERSION));
@@ -170,11 +209,17 @@ export class SpecRepository {
     return new Map(rows.map((row) => [text(row.id), text(row.hash)]));
   }
 
+  /** Stored tags per id — compared by the indexer to catch a retagged file. */
+  tagsById(): Map<string, string[]> {
+    const rows = this.db.prepare(`SELECT id, tags FROM specs`).all() as Row[];
+    return new Map(rows.map((row) => [text(row.id), parseTags(row.tags)]));
+  }
+
   insert(chunk: SpecChunk, updatedAt: string): void {
     this.db
       .prepare(
-        `INSERT INTO specs (id, path, title, heading, anchor, section, content, hash, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO specs (id, path, title, heading, anchor, section, tags, content, hash, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         chunk.id,
@@ -183,6 +228,7 @@ export class SpecRepository {
         chunk.heading ?? null,
         chunk.anchor ?? null,
         chunk.section,
+        JSON.stringify(chunk.tags),
         chunk.content,
         chunk.hash,
         updatedAt,
@@ -193,7 +239,7 @@ export class SpecRepository {
     this.db
       .prepare(
         `UPDATE specs
-            SET path = ?, title = ?, heading = ?, anchor = ?, section = ?,
+            SET path = ?, title = ?, heading = ?, anchor = ?, section = ?, tags = ?,
                 content = ?, hash = ?, updated_at = ?
           WHERE id = ?`,
       )
@@ -203,6 +249,7 @@ export class SpecRepository {
         chunk.heading ?? null,
         chunk.anchor ?? null,
         chunk.section,
+        JSON.stringify(chunk.tags),
         chunk.content,
         chunk.hash,
         updatedAt,
@@ -267,9 +314,22 @@ export class SpecRepository {
     return new Set(rows.map((row) => text(row.id)));
   }
 
-  /** All vectors for one model — see the manual repository's listVectors. */
-  listVectors(model: string): Array<{ id: string; vector: Float32Array }> {
-    const rows = this.db.prepare(`SELECT id, dims, vector FROM spec_vectors WHERE model = ?`).all(model) as Row[];
+  /**
+   * All vectors for one model — see the manual repository's listVectors.
+   * With `tags`, only vectors of specs carrying at least one of them.
+   */
+  listVectors(model: string, tags?: readonly string[]): Array<{ id: string; vector: Float32Array }> {
+    const filter = tagFilter(tags);
+    const rows = (
+      filter.sql
+        ? this.db
+            .prepare(
+              `SELECT v.id, v.dims, v.vector FROM spec_vectors v JOIN specs s ON s.id = v.id
+                WHERE v.model = ?${filter.sql}`,
+            )
+            .all(model, ...filter.params)
+        : this.db.prepare(`SELECT id, dims, vector FROM spec_vectors WHERE model = ?`).all(model)
+    ) as Row[];
     return rows
       .map((row) => ({
         id: text(row.id),
@@ -280,7 +340,12 @@ export class SpecRepository {
       .map(({ id, vector }) => ({ id, vector }));
   }
 
-  search(matchExpression: string, limit: number): SpecHit[] {
+  /**
+   * FTS5 search. With `tags`, only specs carrying at least one of them — the
+   * filter runs inside the query, so `limit` counts matching specs only.
+   */
+  search(matchExpression: string, limit: number, tags?: readonly string[]): SpecHit[] {
+    const filter = tagFilter(tags);
     const rows = this.db
       .prepare(
         `SELECT s.*,
@@ -288,11 +353,11 @@ export class SpecRepository {
                 snippet(specs_fts, 3, '', '', '…', 28) AS excerpt
            FROM specs_fts
            JOIN specs s ON s.rowid = specs_fts.rowid
-          WHERE specs_fts MATCH ?
+          WHERE specs_fts MATCH ?${filter.sql}
           ORDER BY score
           LIMIT ?`,
       )
-      .all(matchExpression, limit) as Row[];
+      .all(matchExpression, ...filter.params, limit) as Row[];
 
     return rows.map((row) => ({
       ...toSpec(row),

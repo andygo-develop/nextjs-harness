@@ -19,6 +19,13 @@ import { toolError } from '../context.js';
 export const searchSpecsInputShape = {
   query: z.string().min(1).describe('Search terms, e.g. "billing rules" or "invoice numbering".'),
   limit: z.number().int().min(1).max(25).optional().describe('Maximum results (default 5).'),
+  tags: z
+    .array(z.string().min(1))
+    .optional()
+    .describe(
+      'Only return specs carrying at least one of these tags, as assigned to include paths in ' +
+        'specs.include of .nextjs-harness/config.json, e.g. ["adr"]. Case-insensitive. Omit to search all specs.',
+    ),
 };
 
 export const searchSpecsOutputShape = {
@@ -32,6 +39,7 @@ export const searchSpecsOutputShape = {
       heading: z.string().optional(),
       section: z.string(),
       path: z.string().describe('Repository-relative path to the source file.'),
+      tags: z.array(z.string()).describe('Tags of the include path(s) that matched this file.'),
       excerpt: z.string(),
     }),
   ),
@@ -51,6 +59,7 @@ export const getSpecOutputShape = {
   heading: z.string().optional(),
   section: z.string(),
   path: z.string(),
+  tags: z.array(z.string()),
   content: z.string(),
 };
 
@@ -70,7 +79,7 @@ async function openCorpus(context: McpContext) {
 
 export async function runSearchSpecsTool(
   context: McpContext,
-  input: { query: string; limit?: number },
+  input: { query: string; limit?: number; tags?: string[] },
 ): Promise<ToolResult> {
   let corpus;
   try {
@@ -86,6 +95,7 @@ export async function runSearchSpecsTool(
       limit: input.limit ?? 5,
       strategy: corpus.searchStrategy,
       embeddings: corpus.requireEmbeddings(),
+      ...(input.tags && input.tags.length > 0 ? { tags: input.tags } : {}),
     });
 
     const results = outcome.hits.map((hit) => ({
@@ -94,12 +104,14 @@ export async function runSearchSpecsTool(
       ...(hit.heading ? { heading: hit.heading } : {}),
       section: hit.section,
       path: hit.path,
+      tags: hit.tags,
       excerpt: toExcerpt(hit.snippet || hit.content, 400),
     }));
 
     const text =
       results.length === 0
-        ? `No project specs matched "${input.query}".`
+        ? `No project specs matched "${input.query}"` +
+          (input.tags && input.tags.length > 0 ? ` with tags: ${input.tags.join(', ')}.` : '.')
         : [
             `${results.length} result(s) from this project's own specs ` +
               '(project documentation, not Next.js framework documentation):',
@@ -108,6 +120,7 @@ export async function runSearchSpecsTool(
               [
                 `${index + 1}. ${result.heading ? `${result.title} › ${result.heading}` : result.title}`,
                 `   file: ${result.path}`,
+                ...(result.tags.length > 0 ? [`   tags: ${result.tags.join(', ')}`] : []),
                 `   documentId: ${result.documentId}`,
                 `   ${result.excerpt}`,
               ].join('\n'),
@@ -164,6 +177,7 @@ export async function runGetSpecTool(
       `# ${spec.title}${spec.heading && spec.heading !== spec.title ? ` › ${spec.heading}` : ''}`,
       `source: this project's own specs (not Next.js framework documentation)`,
       `file: ${spec.path}`,
+      ...(spec.tags.length > 0 ? [`tags: ${spec.tags.join(', ')}`] : []),
       '',
       '---',
       '',
@@ -178,6 +192,7 @@ export async function runGetSpecTool(
         ...(spec.heading ? { heading: spec.heading } : {}),
         section: spec.section,
         path: spec.path,
+        tags: spec.tags,
         content: spec.content,
       },
     };
@@ -196,7 +211,8 @@ export function registerSpecTools(server: McpServer, context: McpContext): void 
       description:
         "Search THIS PROJECT'S own written specs and documentation (requirements, design notes, ADRs). " +
         'This is project knowledge, not Next.js framework documentation — use search_nextjs_manual for that. ' +
-        'Use this to find how this particular project is meant to behave.',
+        'Use this to find how this particular project is meant to behave. ' +
+        'Pass tags to narrow the search to specs whose include path carries one of them.',
       inputSchema: searchSpecsInputShape,
       outputSchema: searchSpecsOutputShape,
     },
