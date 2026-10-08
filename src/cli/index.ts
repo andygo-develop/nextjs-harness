@@ -232,8 +232,14 @@ specs
   .description("Search this project's own specs")
   .option('-l, --limit <n>', 'Maximum number of results', (value) => Number.parseInt(value, 10), 5)
   .option('--full', 'Print whole documents instead of excerpts', false)
-  .action(async (query: string[], options: { limit: number; full: boolean }) => {
-    await specsSearchCommand(query.join(' '), { limit: options.limit, full: options.full });
+  .option(
+    '-t, --tag <tag>',
+    'Only specs tagged with this tag in specs.include (repeatable; any tag matches)',
+    (value: string, previous: string[]) => [...previous, value],
+    [] as string[],
+  )
+  .action(async (query: string[], options: { limit: number; full: boolean; tag: string[] }) => {
+    await specsSearchCommand(query.join(' '), { limit: options.limit, full: options.full, tags: options.tag });
   });
 
 specs

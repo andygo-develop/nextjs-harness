@@ -24,6 +24,7 @@ export {
   CURRENT_CONFIG_VERSION,
   DEFAULT_EMBEDDING_MODEL,
   type HarnessConfig,
+  type SpecIncludeEntry,
 } from './generators/config-generator/schema.js';
 
 export {
@@ -130,7 +131,14 @@ export {
   BLOCK_START,
 } from './generators/targets/managed-block.js';
 
-export { discoverSpecFiles, globToRegExp } from './rags/specs/discovery.js';
+export {
+  discoverSpecFiles,
+  globToRegExp,
+  includePattern,
+  includeTags,
+  normalizeTags,
+  type SpecInclude,
+} from './rags/specs/discovery.js';
 export { indexSpecs, type SpecIndexResult } from './rags/specs/indexer.js';
 export { parseSpec, sectionForSpecPath, type SpecChunk } from './rags/specs/parser.js';
 export { SpecRepository, type SpecHit, type StoredSpec } from './rags/specs/repository.js';

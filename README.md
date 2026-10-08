@@ -147,7 +147,7 @@ including the command catalog.
 | `manuals status` | What is synced and indexed (`--json`) |
 | `manuals versions` | Documentation lines and their local status |
 | `specs index` | Index this project's own specs (opt-in; enables spec search) |
-| `specs search <query>` | Search this project's own specs (`--limit`, `--full`) |
+| `specs search <query>` | Search this project's own specs (`--limit`, `--full`, `--tag`) |
 | `specs status` | Whether project spec search is enabled and current (`--json`) |
 | `targets list` | Coding agents, and whether each is set up (`--json`) |
 | `targets add <agent>` | Set the project up for another agent and install its files |
@@ -320,6 +320,33 @@ Which files count is configurable:
               "AGENTS.md", "CLAUDE.md", "GEMINI.md"]
 }
 ```
+
+An include entry can also be an object that **tags** every file it matches:
+
+```json
+"specs": {
+  "enabled": true,
+  "include": [
+    { "path": "docs/**/*.md", "tags": ["docs"] },
+    { "path": "docs/adr/**/*.md", "tags": ["adr"] },
+    { "path": "specs/**/*.md", "tags": ["specs"] },
+    "*.md"
+  ]
+}
+```
+
+A file matched by several entries carries all of their tags (`docs/adr/0001.md`
+above is tagged `adr` and `docs`); a bare glob adds none. Tags are matched
+case-insensitively. Narrow a search to specs carrying **at least one** of the
+given tags with `search_project_specs`' optional `tags` parameter, or on the
+command line:
+
+```bash
+nextjs-harness specs search "storefront" --tag adr --tag specs
+```
+
+Changing tags only needs `nextjs-harness specs index` — it rewrites the tags
+without re-embedding unchanged content.
 
 Discovery prunes excluded directories rather than walking them, skips symlinks
 so it cannot escape the project, and indexes incrementally by content hash like

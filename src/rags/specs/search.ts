@@ -18,6 +18,7 @@ import {
   tokenizeQuery,
   type LexicalStrategy,
 } from '../manuals/search.js';
+import { normalizeTags } from './discovery.js';
 import { SpecRepository, type SpecHit } from './repository.js';
 
 /** Location of the project spec index — separate from the manual index. */
@@ -43,14 +44,20 @@ export interface SearchSpecsOptions {
   /** See SearchOptions.strategy in the manual searcher. */
   strategy?: 'bm25' | 'hybrid';
   embeddings?: EmbeddingProvider;
+  /**
+   * Keep only specs carrying at least one of these tags (from `specs.include`).
+   * Matched case-insensitively; omitted or empty means no filtering.
+   */
+  tags?: readonly string[];
 }
 
 function bm25Candidates(
   repository: SpecRepository,
   terms: readonly string[],
   limit: number,
+  tags: readonly string[],
 ): { hits: SpecHit[]; strategy: LexicalStrategy } {
-  const run = (expression: string): SpecHit[] => repository.search(expression, limit);
+  const run = (expression: string): SpecHit[] => repository.search(expression, limit, tags);
 
   const all = run(buildMatchExpression(terms, 'AND'));
   if (all.length > 0) {
@@ -73,6 +80,7 @@ async function hybridSearch(
   options: SearchSpecsOptions,
   terms: readonly string[],
   limit: number,
+  tags: readonly string[],
 ): Promise<SpecSearchOutcome> {
   const embeddings = options.embeddings;
   if (!embeddings) {
@@ -81,11 +89,12 @@ async function hybridSearch(
     });
   }
 
-  const lexical = bm25Candidates(options.repository, terms, hybridPoolSize(limit));
+  const lexical = bm25Candidates(options.repository, terms, hybridPoolSize(limit), tags);
 
+  // Both rankers are filtered, so a fused hit can never be an untagged spec.
   const hits = await fuseHybrid({
     corpus: {
-      listVectors: (model) => options.repository.listVectors(model),
+      listVectors: (model) => options.repository.listVectors(model, tags),
       get: (id) => options.repository.get(id),
     },
     embeddings,
@@ -105,16 +114,17 @@ async function hybridSearch(
 export async function searchSpecs(options: SearchSpecsOptions): Promise<SpecSearchOutcome> {
   const terms = tokenizeQuery(options.query);
   const limit = options.limit ?? DEFAULT_LIMIT;
+  const tags = normalizeTags(options.tags ?? []);
 
   if (terms.length === 0) {
     return { hits: [], strategy: 'none', terms };
   }
 
   if (options.strategy === 'hybrid') {
-    return hybridSearch(options, terms, limit);
+    return hybridSearch(options, terms, limit, tags);
   }
 
-  const { hits, strategy } = bm25Candidates(options.repository, terms, limit);
+  const { hits, strategy } = bm25Candidates(options.repository, terms, limit, tags);
   return { hits, strategy, terms };
 }
 

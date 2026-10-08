@@ -10,6 +10,8 @@ export interface SpecsSearchOptions {
   cwd?: string;
   limit?: number;
   full?: boolean;
+  /** Only specs carrying at least one of these tags (see `specs.include`). */
+  tags?: string[];
 }
 
 export async function runSpecsSearch(
@@ -34,6 +36,7 @@ export async function runSpecsSearch(
       limit: options.limit ?? 5,
       strategy: corpus.searchStrategy,
       embeddings: corpus.requireEmbeddings(),
+      ...(options.tags && options.tags.length > 0 ? { tags: options.tags } : {}),
     });
   } finally {
     corpus.close();
@@ -47,7 +50,10 @@ export async function specsSearchCommand(
   const outcome = await runSpecsSearch(query, options);
 
   if (outcome.hits.length === 0) {
-    logger.warn(`No project specs matched "${query}".`);
+    logger.warn(
+      `No project specs matched "${query}"` +
+        (options.tags && options.tags.length > 0 ? ` with tags: ${options.tags.join(', ')}.` : '.'),
+    );
     return;
   }
 
@@ -62,6 +68,9 @@ export async function specsSearchCommand(
 
     logger.print(`${position + 1}. ${heading}`);
     logger.print(`   Section: ${hit.section}`);
+    if (hit.tags.length > 0) {
+      logger.print(`   Tags: ${hit.tags.join(', ')}`);
+    }
     logger.print(`   File: ${hit.path}${hit.anchor ? `#${hit.anchor}` : ''}`);
     logger.print(`   Id:   ${hit.id}`);
     logger.print();
